@@ -3,7 +3,6 @@ import asyncio
 from telethon import TelegramClient
 from telethon.tl.functions.messages import ReportRequest
 from telethon.tl.types import (
-    InputReportReasonSpam,
     InputPeerChannel, InputPeerChat, InputPeerUser
 )
 import logging
@@ -23,9 +22,6 @@ API_HASH = os.getenv('TELEGRAM_API_HASH', '7d3ea0c0d4725498789bd51a9ee02421')
 SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions')
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
-# Report reason - using spam by default
-DEFAULT_REASON = InputReportReasonSpam()
-
 class AuthManager:
     def __init__(self):
         self.clients = []
@@ -37,9 +33,9 @@ class AuthManager:
             logger.warning(f"Sessions directory {SESSIONS_DIR} not found")
             return []
 
-        session_files = [f for f in os.listdir(SESSIONS_DIR) 
+        session_files = [f for f in os.listdir(SESSIONS_DIR)
                         if f.endswith('.session')]
-        
+
         if not session_files:
             logger.warning(f"No session files found in {SESSIONS_DIR}")
             return []
@@ -57,7 +53,7 @@ class AuthManager:
                     lang_code="en",
                     system_lang_code="en"
                 )
-                
+
                 await client.start()
                 if await client.is_user_authorized():
                     self.clients.append(client)
@@ -67,7 +63,7 @@ class AuthManager:
                     await client.disconnect()
             except Exception as e:
                 logger.error(f"Error initializing session {session_file}: {e}")
-        
+
         self.initialized = True
         return len(self.clients)
 
@@ -101,15 +97,10 @@ class AuthManager:
             logger.error(f"Error parsing message link {link}: {e}")
             return None, None
 
-    async def send_report(self, client, peer, msg_id):
+    async def send_report(self, client, peer, msg_id, reason_type="spam"):
         """Send a single report using a client"""
         try:
-            from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
-            
-            # Get the full entity
             entity = await client.get_entity(peer)
-            
-            # Create the appropriate InputPeer
             if hasattr(entity, 'channel_id'):
                 input_peer = InputPeerChannel(
                     channel_id=entity.id,
@@ -122,47 +113,50 @@ class AuthManager:
                     user_id=entity.id,
                     access_hash=entity.access_hash
                 )
-            
-            # Send the report
+
+            # В Telethon 1.40.0 reason ожидает строку, а не объект!
+            # Возможные значения: "spam", "violence", "pornography", "other"
+            reason = reason_type if reason_type in ["spam", "violence", "pornography", "other"] else "spam"
+
             result = await client(ReportRequest(
-                peer=input_peer,
-                id=[msg_id],
-                reason=InputReportReasonSpam(),
-                message=''  # Empty message as required by the API
+                input_peer,
+                [msg_id],
+                reason,
+                ''
             ))
             return True, None
         except Exception as e:
             logger.error(f"Error sending report: {e}")
             return False, str(e)
 
-    async def send_reports(self, link: str) -> dict:
+    async def send_reports(self, link: str, reason_type: str = "spam") -> dict:
         """Send reports from all active sessions"""
         if not self.initialized:
             await self.init_clients()
-        
+
         if not self.clients:
             return {"success": 0, "total": 0, "errors": ["No active sessions available"]}
-        
+
         peer, msg_id = self.parse_message_link(link)
         if not peer or not msg_id:
             return {"success": 0, "total": 0, "errors": ["Invalid message link"]}
-        
+
         results = {
             "success": 0,
             "total": len(self.clients),
             "errors": []
         }
-        
+
         tasks = []
         for client in self.clients:
             task = asyncio.create_task(
-                self.send_report(client, peer, msg_id)
+                self.send_report(client, peer, msg_id, reason_type)
             )
             tasks.append(task)
-        
+
         # Wait for all reports to complete
         report_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         for result in report_results:
             if isinstance(result, Exception):
                 results["errors"].append(str(result))
@@ -170,7 +164,7 @@ class AuthManager:
                 results["success"] += 1
             else:  # error
                 results["errors"].append(result[1])
-        
+
         return results
 
 # Global instance
